@@ -1,5 +1,7 @@
 #include "AppServer.h"
 
+#include <LittleFS.h>
+
 namespace miab {
 
     AppServer::AppServer() {
@@ -7,21 +9,13 @@ namespace miab {
     }
 
     bool AppServer::start() {
-        _webServer.on("/", HTTP_GET, [this] {
-            _webServer.send(
-                200,
-                "text/plain",
-                "Message bottle is alive\n"
-            );
-        });
+        if (! LittleFS.begin()) {
+            Serial.println("LittleFS failed to initialize");
+            return false;
+        }
 
-        _webServer.onNotFound([this] {
-            _webServer.send(
-                200,
-                "text/html",
-                "Message bottle is alive\n"
-            );
-        });
+        _webServer.on("/", HTTP_GET, std::bind(&AppServer::serveIndex, this));
+        _webServer.onNotFound(std::bind(&AppServer::serveIndex, this));
 
         _webServer.begin();
 
@@ -30,6 +24,25 @@ namespace miab {
 
     void AppServer::tick() {
         _webServer.handleClient();
+    }
+
+    void AppServer::serveIndex() {
+        this->sendGzippedFile("/index.html.gz", "text/html");
+    }
+
+    void AppServer::sendGzippedFile(const std::string& fileName, 
+        const std::string& contentType) {
+
+        auto file = LittleFS.open(fileName.c_str());
+        if (!file) {
+            _webServer.send(404, "text/plain", "File not found");
+            return;
+        }
+
+        _webServer.sendHeader("Cache-Control", "public, max-age=3600");
+        _webServer.streamFile(file, contentType.c_str());
+
+        file.close();
     }
 
     AppServer::~AppServer() {

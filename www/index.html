@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000a08" />
+  <title>Message in a Bottle</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --green: #a6ffd0;
+      --green-soft: rgba(211, 255, 230, 0.9);
+      --green-muted: rgba(166, 255, 208, 0.58);
+      --text: rgba(244, 247, 251, 0.78);
+      --line: rgba(166, 255, 208, 0.18);
+      --panel: rgba(0, 10, 8, 0.9);
+      --danger: #ffc48f;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      background: #000;
+    }
+
+    body {
+      min-height: 100vh;
+      min-height: 100dvh;
+      overflow: hidden;
+      color: var(--green-soft);
+      font-family: "Cascadia Mono", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
+    }
+
+    button, input, textarea { font: inherit; }
+
+    .app {
+      height: 100vh;
+      height: 100dvh;
+      padding:
+        max(0.65rem, env(safe-area-inset-top))
+        max(0.65rem, env(safe-area-inset-right))
+        max(0.65rem, env(safe-area-inset-bottom))
+        max(0.65rem, env(safe-area-inset-left));
+    }
+
+    .guestbook {
+      position: relative;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: min(72rem, 100%);
+      height: 100%;
+      margin: 0 auto;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(90deg, rgba(166, 255, 208, 0.07), transparent 42%),
+        linear-gradient(rgba(166, 255, 208, 0.04) 50%, transparent 50%) 0 0 / 100% 4px,
+        var(--panel);
+      box-shadow: 0 0 28px rgba(81, 255, 173, 0.08);
+    }
+
+    .guestbook::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, transparent, rgba(166, 255, 208, 0.08), transparent);
+      opacity: 0.35;
+      transform: translateY(-100%);
+      animation: scan 9s linear infinite;
+    }
+
+    @keyframes scan { to { transform: translateY(100%); } }
+
+    .header {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.8rem 0.9rem;
+      border-bottom: 1px solid var(--line);
+      color: var(--green-muted);
+      font-size: clamp(0.72rem, 1.8vw, 0.88rem);
+      text-transform: uppercase;
+    }
+
+    .status::before {
+      content: "●";
+      margin-right: 0.45rem;
+      color: var(--green);
+    }
+
+    .status.is-error::before { color: var(--danger); }
+
+    .history {
+      position: relative;
+      z-index: 1;
+      min-height: 0;
+      padding: clamp(0.8rem, 2vw, 1.2rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-color: rgba(166, 255, 208, 0.22) transparent;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 100%;
+      color: var(--green-muted);
+      text-align: center;
+    }
+
+    .message {
+      display: grid;
+      gap: 0.18rem;
+      padding: 0.65rem 0;
+      border-bottom: 1px solid rgba(166, 255, 208, 0.09);
+    }
+
+    .message:last-child { border-bottom: 0; }
+
+    .message-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .handle { color: rgba(166, 255, 208, 0.95); }
+    .handle::before { content: "@"; }
+
+    .message-id {
+      flex: 0 0 auto;
+      color: rgba(166, 255, 208, 0.35);
+      font-size: 0.76em;
+    }
+
+    .message-body {
+      color: var(--text);
+      line-height: 1.42;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .composer {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.55rem;
+      align-items: end;
+      padding: 0.75rem;
+      border-top: 1px solid var(--line);
+      background: rgba(0, 10, 8, 0.86);
+    }
+
+    .message-input {
+      width: 100%;
+      min-height: 2.75rem;
+      max-height: 8rem;
+      resize: none;
+      padding: 0.72rem 0.8rem;
+      border: 1px solid rgba(166, 255, 208, 0.19);
+      border-radius: 0;
+      outline: 0;
+      background: rgba(0, 0, 0, 0.24);
+      color: var(--green-soft);
+      caret-color: var(--green);
+      line-height: 1.35;
+    }
+
+    .message-input:focus {
+      border-color: rgba(166, 255, 208, 0.45);
+      box-shadow: 0 0 0 1px rgba(166, 255, 208, 0.08);
+    }
+
+    .message-input::placeholder { color: rgba(211, 255, 230, 0.36); }
+
+    .send-button,
+    .modal-button {
+      min-height: 2.75rem;
+      padding: 0.65rem 0.9rem;
+      border: 1px solid rgba(166, 255, 208, 0.35);
+      border-radius: 0;
+      background: rgba(166, 255, 208, 0.08);
+      color: var(--green);
+      cursor: pointer;
+    }
+
+    .send-button:hover,
+    .send-button:focus-visible,
+    .modal-button:hover,
+    .modal-button:focus-visible {
+      background: rgba(166, 255, 208, 0.16);
+      outline: 1px solid rgba(166, 255, 208, 0.28);
+    }
+
+    .send-button:disabled,
+    .modal-button:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+
+    .composer-meta {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      min-height: 1em;
+      color: rgba(166, 255, 208, 0.42);
+      font-size: 0.72rem;
+    }
+
+    .composer-meta .is-limit { color: var(--danger); }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+      background: rgba(0, 0, 0, 0.78);
+      backdrop-filter: blur(3px);
+    }
+
+    .modal-backdrop[hidden] { display: none; }
+
+    .modal {
+      width: min(28rem, 100%);
+      padding: 1rem;
+      border: 1px solid rgba(166, 255, 208, 0.28);
+      background:
+        linear-gradient(rgba(166, 255, 208, 0.045) 50%, transparent 50%) 0 0 / 100% 4px,
+        rgba(0, 10, 8, 0.98);
+      box-shadow: 0 0 32px rgba(81, 255, 173, 0.12);
+    }
+
+    .modal h1 {
+      margin: 0 0 0.55rem;
+      color: var(--green);
+      font-size: 1rem;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+
+    .modal p {
+      margin: 0 0 1rem;
+      color: var(--text);
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+
+    .handle-input {
+      width: 100%;
+      padding: 0.7rem 0.75rem;
+      border: 1px solid rgba(166, 255, 208, 0.22);
+      border-radius: 0;
+      outline: 0;
+      background: rgba(0, 0, 0, 0.3);
+      color: var(--green-soft);
+      font-size: 16px;
+    }
+
+    .handle-input:focus { border-color: rgba(166, 255, 208, 0.5); }
+
+    .modal-meta {
+      min-height: 1.2rem;
+      margin-top: 0.4rem;
+      color: rgba(166, 255, 208, 0.45);
+      font-size: 0.72rem;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 0.8rem;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 600px) {
+      .app { padding: 0; }
+      .guestbook { border-right: 0; border-left: 0; }
+      .header { padding-top: max(0.75rem, env(safe-area-inset-top)); }
+      .composer { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="guestbook" aria-label="Message in a bottle guestbook">
+      <header class="header">
+        <span>memory.read / messages</span>
+        <span class="status" id="connection-status">loading</span>
+      </header>
+
+      <div class="history" id="chat-history" aria-live="polite" aria-busy="true">
+        <div class="empty" id="empty-state">recovering messages...</div>
+      </div>
+
+      <form class="composer" id="message-form">
+        <label class="sr-only" for="message-input">New message</label>
+        <textarea
+          class="message-input"
+          id="message-input"
+          name="message"
+          rows="1"
+          maxlength="127"
+          placeholder="Leave a message..."
+          autocomplete="off"
+          required
+        ></textarea>
+        <button class="send-button" id="send-button" type="submit">send</button>
+        <div class="composer-meta">
+          <span id="active-handle">handle: not set</span>
+          <span id="message-counter">0/127 bytes</span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="handle-modal" role="dialog" aria-modal="true" aria-labelledby="handle-title" hidden>
+    <form class="modal" id="handle-form">
+      <h1 id="handle-title">Choose a handle</h1>
+      <p>Your handle is your nickname which appears beside messages you post during this visit. It stays only in this browser session and does not identify you outside this guestbook.</p>
+      <label class="sr-only" for="handle-input">Handle or nickname</label>
+      <input
+        class="handle-input"
+        id="handle-input"
+        name="handle"
+        type="text"
+        maxlength="31"
+        placeholder="nickname"
+        autocomplete="nickname"
+        autocapitalize="off"
+        required
+      />
+      <div class="modal-meta" id="handle-counter">0/31 bytes</div>
+      <div class="modal-actions">
+        <button class="modal-button" type="submit">continue</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    // API contract:
+    // GET  /read                    -> { "entries": Message[] }
+    // GET  /read?afterId=<id>       -> { "entries": Message[] }
+    // POST /write {handle,message}  -> { "entry": Message }
+    // Message: { "id": positive integer, "handle": string, "message": string }
+
+    const apiBaseUrl = "";
+    const pollIntervalMs = 3000;
+    const limits = { handle: 31, message: 127 };
+
+    const historyElement = document.querySelector("#chat-history");
+    const emptyState = document.querySelector("#empty-state");
+    const statusElement = document.querySelector("#connection-status");
+    const messageForm = document.querySelector("#message-form");
+    const messageInput = document.querySelector("#message-input");
+    const sendButton = document.querySelector("#send-button");
+    const messageCounter = document.querySelector("#message-counter");
+    const activeHandle = document.querySelector("#active-handle");
+    const handleModal = document.querySelector("#handle-modal");
+    const handleForm = document.querySelector("#handle-form");
+    const handleInput = document.querySelector("#handle-input");
+    const handleCounter = document.querySelector("#handle-counter");
+    const utf8Encoder = new TextEncoder();
+
+    let handle = sessionStorage.getItem("guestbookHandle") || "";
+    let pendingMessage = "";
+    let lastMessageId = 0;
+    let pollInProgress = false;
+    let posting = false;
+    const renderedIds = new Set();
+
+    function utf8ByteLength(value) {
+      return utf8Encoder.encode(value).length;
+    }
+
+    function truncateToUtf8Bytes(value, limit) {
+      let result = "";
+      let bytes = 0;
+      for (const character of value) {
+        const characterBytes = utf8ByteLength(character);
+        if (bytes + characterBytes > limit) break;
+        result += character;
+        bytes += characterBytes;
+      }
+      return result;
+    }
+
+    function enforceUtf8Limit(input, limit) {
+      if (utf8ByteLength(input.value) > limit) {
+        input.value = truncateToUtf8Bytes(input.value, limit);
+      }
+    }
+
+    function setStatus(text, isError = false) {
+      statusElement.textContent = text;
+      statusElement.classList.toggle("is-error", isError);
+    }
+
+    function updateHandleDisplay() {
+      activeHandle.textContent = handle ? `handle: @${handle}` : "handle: not set";
+    }
+
+    function updateMessageCounter() {
+      enforceUtf8Limit(messageInput, limits.message);
+      const used = utf8ByteLength(messageInput.value);
+      messageCounter.textContent = `${used}/${limits.message} bytes`;
+      messageCounter.classList.toggle("is-limit", used === limits.message);
+      messageInput.style.height = "auto";
+      messageInput.style.height = `${Math.min(messageInput.scrollHeight, 128)}px`;
+    }
+
+    function updateHandleCounter() {
+      enforceUtf8Limit(handleInput, limits.handle);
+      const used = utf8ByteLength(handleInput.value);
+      handleCounter.textContent = `${used}/${limits.handle} bytes`;
+    }
+
+    function validateEntry(entry) {
+      return entry &&
+        Number.isSafeInteger(entry.id) && entry.id > 0 &&
+        typeof entry.handle === "string" &&
+        typeof entry.message === "string";
+    }
+
+    function isNearBottom() {
+      return historyElement.scrollHeight - historyElement.scrollTop - historyElement.clientHeight < 80;
+    }
+
+    function appendEntries(entries, forceScroll = false) {
+      if (!entries.length) return;
+
+      const shouldScroll = forceScroll || isNearBottom();
+      const fragment = document.createDocumentFragment();
+
+      entries
+        .filter(validateEntry)
+        .sort((a, b) => a.id - b.id)
+        .forEach((entry) => {
+          lastMessageId = Math.max(lastMessageId, entry.id);
+          if (renderedIds.has(entry.id)) return;
+          renderedIds.add(entry.id);
+
+          const article = document.createElement("article");
+          const headerRow = document.createElement("div");
+          const handleElement = document.createElement("span");
+          const idElement = document.createElement("span");
+          const body = document.createElement("div");
+
+          article.className = "message";
+          article.dataset.messageId = String(entry.id);
+          headerRow.className = "message-header";
+          handleElement.className = "handle";
+          idElement.className = "message-id";
+          body.className = "message-body";
+
+          handleElement.textContent = entry.handle;
+          idElement.textContent = `#${entry.id}`;
+          body.textContent = entry.message;
+
+          headerRow.append(handleElement, idElement);
+          article.append(headerRow, body);
+          fragment.append(article);
+        });
+
+      emptyState?.remove();
+      historyElement.append(fragment);
+      if (shouldScroll) historyElement.scrollTop = historyElement.scrollHeight;
+    }
+
+    async function readMessages({ initial = false } = {}) {
+      if (pollInProgress) return;
+      pollInProgress = true;
+
+      try {
+        const suffix = initial || lastMessageId === 0
+          ? ""
+          : `?afterId=${encodeURIComponent(lastMessageId)}`;
+        const response = await fetch(`${apiBaseUrl}/read${suffix}`, {
+          headers: { "Accept": "application/json" },
+          cache: "no-store"
+        });
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (!payload || !Array.isArray(payload.entries)) {
+          throw new Error("invalid response");
+        }
+
+        appendEntries(payload.entries, initial);
+        historyElement.setAttribute("aria-busy", "false");
+        if (initial && payload.entries.length === 0 && emptyState) {
+          emptyState.textContent = "No messages yet. Leave the first one.";
+        }
+        setStatus("online");
+      } catch (error) {
+        console.error("Guestbook read failed:", error);
+        setStatus("offline", true);
+        historyElement.setAttribute("aria-busy", "false");
+        if (initial && emptyState) emptyState.textContent = "Could not load messages. Retrying...";
+      } finally {
+        pollInProgress = false;
+      }
+    }
+
+    async function writeMessage(message) {
+      if (posting) return;
+      posting = true;
+      sendButton.disabled = true;
+      messageInput.disabled = true;
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/write`, {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ handle, message })
+        });
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (!payload || !validateEntry(payload.entry)) {
+          throw new Error("invalid response");
+        }
+
+        appendEntries([payload.entry], true);
+        messageInput.value = "";
+        updateMessageCounter();
+        setStatus("online");
+      } catch (error) {
+        console.error("Guestbook write failed:", error);
+        setStatus("send failed", true);
+        messageInput.value = message;
+        updateMessageCounter();
+      } finally {
+        posting = false;
+        sendButton.disabled = false;
+        messageInput.disabled = false;
+        messageInput.focus();
+      }
+    }
+
+    function openHandleModal(message) {
+      pendingMessage = message;
+      handleModal.hidden = false;
+      handleInput.value = "";
+      updateHandleCounter();
+      requestAnimationFrame(() => handleInput.focus());
+    }
+
+    function closeHandleModal() {
+      handleModal.hidden = true;
+      messageInput.focus();
+    }
+
+    messageInput.addEventListener("input", updateMessageCounter);
+    handleInput.addEventListener("input", updateHandleCounter);
+
+    messageInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        messageForm.requestSubmit();
+      }
+    });
+
+    messageForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const message = messageInput.value.trim();
+      if (!message || posting) return;
+
+      if (!handle) {
+        openHandleModal(message);
+        return;
+      }
+
+      void writeMessage(message);
+    });
+
+    handleForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const selectedHandle = handleInput.value.trim();
+      if (!selectedHandle) return;
+
+      handle = truncateToUtf8Bytes(selectedHandle, limits.handle);
+      sessionStorage.setItem("guestbookHandle", handle);
+      updateHandleDisplay();
+      closeHandleModal();
+
+      const message = pendingMessage;
+      pendingMessage = "";
+      if (message) void writeMessage(message);
+    });
+
+    updateHandleDisplay();
+    updateMessageCounter();
+    void readMessages({ initial: true });
+    setInterval(() => void readMessages(), pollIntervalMs);
+  </script>
+</body>
+</html>

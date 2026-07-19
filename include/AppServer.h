@@ -15,6 +15,12 @@ namespace miab {
             void tick();
 
         private:
+            void serveIndex();
+
+        private:
+            void sendGzippedFile(const std::string& path, 
+                const std::string& contentType);
+
             WebServer _webServer;
     };
 
