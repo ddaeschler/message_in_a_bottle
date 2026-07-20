@@ -17,13 +17,6 @@ using MessageId = std::uint64_t;
 
 #pragma pack(push, 1)
 
-/**
- * Static on-disk metadata.
- *
- * This header is written only when the file is created. Runtime state such as
- * the next ID and retained count is reconstructed by scanning the records at
- * startup, avoiding a hot metadata write for every posted message.
- */
 struct Header {
     char magic[8];
     std::uint32_t version;
@@ -33,12 +26,6 @@ struct Header {
     std::uint32_t crc32;
 };
 
-/**
- * Fixed-size persistent guestbook message.
- *
- * `id` is the API-visible monotonically increasing message ID. A CRC makes an
- * interrupted or partial flash write distinguishable from a valid message.
- */
 struct Entry {
     MessageId id;
     char handle[HANDLE_MAX_SIZE];
@@ -54,17 +41,36 @@ static_assert(sizeof(Entry) == 172, "Unexpected ring-buffer entry layout");
 constexpr std::uint32_t HEADER_SIZE = sizeof(Header);
 constexpr std::uint32_t ENTRY_SIZE = sizeof(Entry);
 
-/**
- * Persistent fixed-record guestbook ring buffer backed by an Arduino FS.
- *
- * Typical construction:
- *
- *     RingBuffer guestbook{LittleFS, "/ring_buffer.bin"};
- *     guestbook.open();
- *
- * Records are returned oldest-to-newest, which matches the chat UI. The
- * `readAfter()` method directly supports GET /read?afterId=<id>.
- */
+enum class Error : std::uint8_t {
+    none = 0,
+    invalid_capacity,
+    not_open,
+    invalid_handle,
+    invalid_message,
+    file_create_failed,
+    file_open_failed,
+    file_seek_failed,
+    file_read_failed,
+    file_write_failed,
+    invalid_header,
+    invalid_file_size,
+    preallocation_failed,
+    write_verification_failed,
+    id_exhausted,
+    slot_out_of_range
+};
+
+[[nodiscard]] const char* errorMessage(Error error) noexcept;
+
+struct WriteResult {
+    Error error = Error::none;
+    Entry entry{};
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return error == Error::none;
+    }
+};
+
 class RingBuffer {
 public:
     RingBuffer(
@@ -80,24 +86,25 @@ public:
     RingBuffer& operator=(RingBuffer&&) = delete;
 
     /** Open and validate an existing file, or create and preallocate a new one. */
-    void open();
+    [[nodiscard]] Error open();
 
-    /** Close the underlying file handle. */
+    /** Close the underlying file handle and clear reconstructed runtime state. */
     void close();
 
     [[nodiscard]] bool isOpen() const;
 
-    /**
-     * Persist one message and return the complete stored record, including its
-     * newly assigned API-visible ID.
-     */
-    Entry writeNext(const std::string& handle, const std::string& message);
+    /** Persist one message and return its complete stored record. */
+    [[nodiscard]] WriteResult writeNext(
+        const std::string& handle,
+        const std::string& message);
 
-    /** Return all currently retained messages, oldest-to-newest. */
-    [[nodiscard]] std::vector<Entry> readAll();
+    /** Replace `entries` with all retained records, oldest-to-newest. */
+    [[nodiscard]] Error readAll(std::vector<Entry>& entries);
 
-    /** Return retained messages with id > afterId, oldest-to-newest. */
-    [[nodiscard]] std::vector<Entry> readAfter(MessageId afterId);
+    /** Replace `entries` with retained records whose ID is greater than afterId. */
+    [[nodiscard]] Error readAfter(
+        MessageId afterId,
+        std::vector<Entry>& entries);
 
     [[nodiscard]] MessageId latestId() const noexcept;
     [[nodiscard]] std::uint32_t count() const noexcept;
@@ -115,13 +122,16 @@ private:
     MessageId _nextId = 1;
     std::uint32_t _count = 0;
 
-    void createNewFile();
-    void openExistingFile();
-    void reconstructState();
+    [[nodiscard]] Error createNewFile();
+    [[nodiscard]] Error openExistingFile();
+    [[nodiscard]] Error reconstructState();
 
-    [[nodiscard]] std::vector<Entry> scanValidEntries();
-    [[nodiscard]] bool readSlot(std::uint32_t slot, Entry& entry);
-    void writeSlot(std::uint32_t slot, const Entry& entry);
+    [[nodiscard]] Error scanValidEntries(std::vector<Entry>& entries);
+    [[nodiscard]] Error readSlot(
+        std::uint32_t slot,
+        Entry& entry,
+        bool& isValid);
+    [[nodiscard]] Error writeSlot(std::uint32_t slot, const Entry& entry);
 
     [[nodiscard]] std::size_t slotOffset(std::uint32_t slot) const;
     [[nodiscard]] bool isValidHeader(const Header& header) const;

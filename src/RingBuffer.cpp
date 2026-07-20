@@ -4,7 +4,6 @@
 #include <array>
 #include <cstring>
 #include <limits>
-#include <stdexcept>
 #include <utility>
 
 namespace miab::ring_buffer {
@@ -13,14 +12,31 @@ namespace {
 
 constexpr std::size_t PREALLOCATE_CHUNK_SIZE = 256;
 
-void require(bool condition, const char* message)
-{
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
 } // namespace
+
+const char* errorMessage(Error error) noexcept
+{
+    switch (error) {
+    case Error::none: return "no error";
+    case Error::invalid_capacity: return "ring-buffer capacity must be greater than zero";
+    case Error::not_open: return "ring buffer is not open";
+    case Error::invalid_handle: return "handle must contain 1-31 UTF-8 bytes";
+    case Error::invalid_message: return "message must contain 1-127 UTF-8 bytes";
+    case Error::file_create_failed: return "failed to create ring-buffer file";
+    case Error::file_open_failed: return "failed to open ring-buffer file";
+    case Error::file_seek_failed: return "failed to seek in ring-buffer file";
+    case Error::file_read_failed: return "failed to read ring-buffer file";
+    case Error::file_write_failed: return "failed to write ring-buffer file";
+    case Error::invalid_header: return "unsupported or corrupt ring-buffer header";
+    case Error::invalid_file_size: return "ring-buffer file size does not match its header";
+    case Error::preallocation_failed: return "ring-buffer preallocation failed";
+    case Error::write_verification_failed: return "ring-buffer write verification failed";
+    case Error::id_exhausted: return "ring-buffer message ID space exhausted";
+    case Error::slot_out_of_range: return "ring-buffer slot is out of range";
+    }
+
+    return "unknown ring-buffer error";
+}
 
 RingBuffer::RingBuffer(
     fs::FS& filesystem,
@@ -30,9 +46,6 @@ RingBuffer::RingBuffer(
       _path(std::move(path)),
       _requestedMaxEntries(maxEntries)
 {
-    if (_requestedMaxEntries == 0) {
-        throw std::invalid_argument("Ring-buffer capacity must be greater than zero");
-    }
 }
 
 RingBuffer::~RingBuffer()
@@ -40,17 +53,34 @@ RingBuffer::~RingBuffer()
     close();
 }
 
-void RingBuffer::open()
+Error RingBuffer::open()
 {
     close();
 
-    if (_filesystem.exists(_path.c_str())) {
-        openExistingFile();
-    } else {
-        createNewFile();
+    if (_requestedMaxEntries == 0) {
+        return Error::invalid_capacity;
     }
 
-    reconstructState();
+    const bool existed = _filesystem.exists(_path.c_str());
+    Error error = existed ? openExistingFile() : createNewFile();
+
+    if (error != Error::none) {
+        close();
+        if (!existed) {
+            _filesystem.remove(_path.c_str());
+        }
+        return error;
+    }
+
+    error = reconstructState();
+    if (error != Error::none) {
+        close();
+        if (!existed) {
+            _filesystem.remove(_path.c_str());
+        }
+    }
+
+    return error;
 }
 
 void RingBuffer::close()
@@ -58,6 +88,10 @@ void RingBuffer::close()
     if (_file) {
         _file.close();
     }
+
+    _header = {};
+    _nextId = 1;
+    _count = 0;
 }
 
 bool RingBuffer::isOpen() const
@@ -65,7 +99,7 @@ bool RingBuffer::isOpen() const
     return static_cast<bool>(_file);
 }
 
-void RingBuffer::createNewFile()
+Error RingBuffer::createNewFile()
 {
     _header = {};
     std::memcpy(_header.magic, MAGIC, sizeof(MAGIC));
@@ -76,14 +110,16 @@ void RingBuffer::createNewFile()
     _header.crc32 = calculateHeaderCrc(_header);
 
     _file = _filesystem.open(_path.c_str(), "w+");
-    require(static_cast<bool>(_file), "Failed to create ring-buffer file");
+    if (!_file) {
+        return Error::file_create_failed;
+    }
 
-    require(
-        _file.write(reinterpret_cast<const std::uint8_t*>(&_header), HEADER_SIZE) == HEADER_SIZE,
-        "Failed to write ring-buffer header");
+    if (_file.write(
+            reinterpret_cast<const std::uint8_t*>(&_header),
+            HEADER_SIZE) != HEADER_SIZE) {
+        return Error::file_write_failed;
+    }
 
-    // Preallocate every slot as zero bytes. An empty slot has id == 0 and is
-    // intentionally not a valid record.
     const std::size_t dataBytes =
         static_cast<std::size_t>(_header.max_entries) * ENTRY_SIZE;
 
@@ -92,67 +128,97 @@ void RingBuffer::createNewFile()
 
     while (remaining > 0) {
         const std::size_t chunk = std::min(remaining, zeros.size());
-        require(
-            _file.write(zeros.data(), chunk) == chunk,
-            "Failed to preallocate ring-buffer records");
+        if (_file.write(zeros.data(), chunk) != chunk) {
+            return Error::preallocation_failed;
+        }
         remaining -= chunk;
     }
 
     _file.flush();
-    require(
-        _file.size() == HEADER_SIZE + dataBytes,
-        "Ring-buffer preallocation produced an unexpected file size");
+
+    if (_file.size() != HEADER_SIZE + dataBytes) {
+        return Error::preallocation_failed;
+    }
+
+    return Error::none;
 }
 
-void RingBuffer::openExistingFile()
+Error RingBuffer::openExistingFile()
 {
     _file = _filesystem.open(_path.c_str(), "r+");
-    require(static_cast<bool>(_file), "Failed to open ring-buffer file");
+    if (!_file) {
+        return Error::file_open_failed;
+    }
 
-    require(_file.seek(0, SeekSet), "Failed to seek to ring-buffer header");
-    require(
-        _file.read(reinterpret_cast<std::uint8_t*>(&_header), HEADER_SIZE) == HEADER_SIZE,
-        "Failed to read ring-buffer header");
+    if (!_file.seek(0, SeekSet)) {
+        return Error::file_seek_failed;
+    }
+
+    if (_file.read(
+            reinterpret_cast<std::uint8_t*>(&_header),
+            HEADER_SIZE) != HEADER_SIZE) {
+        return Error::file_read_failed;
+    }
 
     if (!isValidHeader(_header)) {
-        throw std::runtime_error(
-            "Unsupported or corrupt ring-buffer file. This implementation expects format v2");
+        return Error::invalid_header;
     }
 
     const std::size_t expectedSize =
         HEADER_SIZE + static_cast<std::size_t>(_header.max_entries) * ENTRY_SIZE;
 
-    require(
-        _file.size() == expectedSize,
-        "Ring-buffer file size does not match its header");
+    if (_file.size() != expectedSize) {
+        return Error::invalid_file_size;
+    }
+
+    return Error::none;
 }
 
-void RingBuffer::reconstructState()
+Error RingBuffer::reconstructState()
 {
-    auto entries = scanValidEntries();
+    std::vector<Entry> entries;
+    const Error error = scanValidEntries(entries);
+    if (error != Error::none) {
+        return error;
+    }
 
     _count = static_cast<std::uint32_t>(entries.size());
-    _nextId = entries.empty() ? 1 : entries.back().id + 1;
 
-    if (_nextId == 0) {
-        throw std::overflow_error("Ring-buffer message ID space exhausted");
+    if (entries.empty()) {
+        _nextId = 1;
+        return Error::none;
     }
+
+    _nextId = entries.back().id == std::numeric_limits<MessageId>::max()
+        ? 0
+        : entries.back().id + 1;
+    return Error::none;
 }
 
-Entry RingBuffer::writeNext(
+WriteResult RingBuffer::writeNext(
     const std::string& handle,
     const std::string& message)
 {
-    require(isOpen(), "Ring buffer is not open");
+    WriteResult result{};
 
-    // std::string::size() is the UTF-8 byte count for the API strings, which is
-    // exactly what the fixed on-disk fields limit.
+    if (!isOpen()) {
+        result.error = Error::not_open;
+        return result;
+    }
+
     if (handle.empty() || handle.size() >= HANDLE_MAX_SIZE) {
-        throw std::range_error("Handle must contain 1-31 UTF-8 bytes");
+        result.error = Error::invalid_handle;
+        return result;
     }
 
     if (message.empty() || message.size() >= MESSAGE_MAX_SIZE) {
-        throw std::range_error("Message must contain 1-127 UTF-8 bytes");
+        result.error = Error::invalid_message;
+        return result;
+    }
+
+    if (_nextId == 0) {
+        result.error = Error::id_exhausted;
+        return result;
     }
 
     Entry entry{};
@@ -164,81 +230,110 @@ Entry RingBuffer::writeNext(
     const std::uint32_t slot = static_cast<std::uint32_t>(
         (entry.id - 1) % _header.max_entries);
 
-    writeSlot(slot, entry);
-
-    // Verify the persisted bytes before exposing the ID to the HTTP layer.
-    Entry verified{};
-    if (!readSlot(slot, verified) || verified.id != entry.id) {
-        throw std::runtime_error("Ring-buffer write verification failed");
+    result.error = writeSlot(slot, entry);
+    if (result.error != Error::none) {
+        return result;
     }
 
-    ++_nextId;
+    Entry verified{};
+    bool isValid = false;
+    result.error = readSlot(slot, verified, isValid);
+    if (result.error != Error::none) {
+        return result;
+    }
+
+    if (!isValid || verified.id != entry.id) {
+        result.error = Error::write_verification_failed;
+        return result;
+    }
+
+    if (_nextId == std::numeric_limits<MessageId>::max()) {
+        // The current record was written successfully, but no later ID exists.
+        // Keep the record visible and mark the next write as exhausted.
+        _nextId = 0;
+    } else {
+        ++_nextId;
+    }
+
     if (_count < _header.max_entries) {
         ++_count;
     }
 
-    return entry;
+    result.entry = entry;
+    return result;
 }
 
-std::vector<Entry> RingBuffer::readAll()
+Error RingBuffer::readAll(std::vector<Entry>& entries)
 {
-    require(isOpen(), "Ring buffer is not open");
-    return scanValidEntries();
+    entries.clear();
+
+    if (!isOpen()) {
+        return Error::not_open;
+    }
+
+    return scanValidEntries(entries);
 }
 
-std::vector<Entry> RingBuffer::readAfter(MessageId afterId)
+Error RingBuffer::readAfter(
+    MessageId afterId,
+    std::vector<Entry>& entries)
 {
-    require(isOpen(), "Ring buffer is not open");
+    entries.clear();
 
-    std::vector<Entry> entries;
+    if (!isOpen()) {
+        return Error::not_open;
+    }
 
     if (_count == 0) {
-        return entries;
+        return Error::none;
     }
 
-    const MessageId latest = _nextId - 1;
-
+    const MessageId latest = latestId();
     if (afterId >= latest) {
-        return entries;
+        return Error::none;
     }
 
-    // Under normal operation, the retained IDs form one contiguous range.
     const MessageId oldest =
         latest - static_cast<MessageId>(_count) + 1;
-
-    // afterId + 1 cannot overflow here because afterId < latest.
-    const MessageId first =
-        afterId < oldest ? oldest : afterId + 1;
+    const MessageId first = afterId < oldest ? oldest : afterId + 1;
 
     const std::size_t resultCount =
         static_cast<std::size_t>(latest - first + 1);
-
     entries.reserve(resultCount);
 
     for (MessageId id = first;; ++id) {
-        const std::uint32_t slot =
-            static_cast<std::uint32_t>(
-                (id - 1) % _header.max_entries
-            );
+        const std::uint32_t slot = static_cast<std::uint32_t>(
+            (id - 1) % _header.max_entries);
 
         Entry entry{};
+        bool isValid = false;
+        const Error error = readSlot(slot, entry, isValid);
+        if (error != Error::none) {
+            entries.clear();
+            return error;
+        }
 
-        if (readSlot(slot, entry) && entry.id == id) {
+        if (isValid && entry.id == id) {
             entries.push_back(entry);
         }
 
-        // Avoid relying on id <= latest, which could wrap at UINT64_MAX.
         if (id == latest) {
             break;
         }
     }
 
-    return entries;
+    return Error::none;
 }
 
 MessageId RingBuffer::latestId() const noexcept
 {
-    return _nextId - 1;
+    if (_count == 0) {
+        return 0;
+    }
+
+    return _nextId == 0
+        ? std::numeric_limits<MessageId>::max()
+        : _nextId - 1;
 }
 
 std::uint32_t RingBuffer::count() const noexcept
@@ -251,14 +346,21 @@ std::uint32_t RingBuffer::capacity() const noexcept
     return _header.max_entries;
 }
 
-std::vector<Entry> RingBuffer::scanValidEntries()
+Error RingBuffer::scanValidEntries(std::vector<Entry>& entries)
 {
-    std::vector<Entry> entries;
+    entries.clear();
     entries.reserve(_header.max_entries);
 
     for (std::uint32_t slot = 0; slot < _header.max_entries; ++slot) {
         Entry entry{};
-        if (readSlot(slot, entry)) {
+        bool isValid = false;
+        const Error error = readSlot(slot, entry, isValid);
+        if (error != Error::none) {
+            entries.clear();
+            return error;
+        }
+
+        if (isValid) {
             entries.push_back(entry);
         }
     }
@@ -270,8 +372,6 @@ std::vector<Entry> RingBuffer::scanValidEntries()
             return left.id < right.id;
         });
 
-    // IDs should be unique because each ID maps to exactly one ring slot. If a
-    // damaged or externally modified file contains duplicates, retain only one.
     entries.erase(
         std::unique(
             entries.begin(),
@@ -287,41 +387,54 @@ std::vector<Entry> RingBuffer::scanValidEntries()
             entries.end() - static_cast<std::ptrdiff_t>(_header.max_entries));
     }
 
-    return entries;
+    return Error::none;
 }
 
-bool RingBuffer::readSlot(std::uint32_t slot, Entry& entry)
+Error RingBuffer::readSlot(
+    std::uint32_t slot,
+    Entry& entry,
+    bool& isValid)
 {
+    entry = {};
+    isValid = false;
+
     if (slot >= _header.max_entries) {
-        return false;
+        return Error::slot_out_of_range;
     }
 
     if (!_file.seek(slotOffset(slot), SeekSet)) {
-        throw std::runtime_error("Failed to seek while reading ring-buffer slot");
+        return Error::file_seek_failed;
     }
 
-    if (_file.read(reinterpret_cast<std::uint8_t*>(&entry), ENTRY_SIZE) != ENTRY_SIZE) {
-        throw std::runtime_error("Failed to read complete ring-buffer slot");
+    if (_file.read(
+            reinterpret_cast<std::uint8_t*>(&entry),
+            ENTRY_SIZE) != ENTRY_SIZE) {
+        entry = {};
+        return Error::file_read_failed;
     }
 
-    return isValidEntry(entry);
+    isValid = isValidEntry(entry);
+    return Error::none;
 }
 
-void RingBuffer::writeSlot(std::uint32_t slot, const Entry& entry)
+Error RingBuffer::writeSlot(std::uint32_t slot, const Entry& entry)
 {
     if (slot >= _header.max_entries) {
-        throw std::out_of_range("Ring-buffer slot out of range");
+        return Error::slot_out_of_range;
     }
 
-    require(
-        _file.seek(slotOffset(slot), SeekSet),
-        "Failed to seek while writing ring-buffer slot");
+    if (!_file.seek(slotOffset(slot), SeekSet)) {
+        return Error::file_seek_failed;
+    }
 
-    require(
-        _file.write(reinterpret_cast<const std::uint8_t*>(&entry), ENTRY_SIZE) == ENTRY_SIZE,
-        "Failed to write complete ring-buffer slot");
+    if (_file.write(
+            reinterpret_cast<const std::uint8_t*>(&entry),
+            ENTRY_SIZE) != ENTRY_SIZE) {
+        return Error::file_write_failed;
+    }
 
     _file.flush();
+    return Error::none;
 }
 
 std::size_t RingBuffer::slotOffset(std::uint32_t slot) const
@@ -345,7 +458,6 @@ bool RingBuffer::isValidEntry(const Entry& entry) const
         return false;
     }
 
-    // A valid record must contain a terminator inside each fixed string field.
     return std::memchr(entry.handle, '\0', HANDLE_MAX_SIZE) != nullptr &&
            std::memchr(entry.message, '\0', MESSAGE_MAX_SIZE) != nullptr;
 }
@@ -359,7 +471,8 @@ std::uint32_t RingBuffer::calculateCrc32(const void* data, std::size_t length)
         crc ^= bytes[i];
         for (int bit = 0; bit < 8; ++bit) {
             const std::uint32_t mask =
-                static_cast<std::uint32_t>(-(static_cast<std::int32_t>(crc & 1u)));
+                static_cast<std::uint32_t>(
+                    -(static_cast<std::int32_t>(crc & 1u)));
             crc = (crc >> 1u) ^ (0xEDB88320u & mask);
         }
     }
