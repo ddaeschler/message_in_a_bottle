@@ -46,7 +46,7 @@ namespace miab {
         // API Endpoints
         _webServer.on("/read", HTTP_GET, std::bind(&AppServer::serveRead, this));
         _webServer.on("/write", HTTP_POST, std::bind(&AppServer::serveWrite, this));
-        
+
         _webServer.onNotFound([this] {
             _webServer.sendHeader(
                 "Location",
@@ -224,9 +224,11 @@ namespace miab {
         }
 
         JsonDocument response;
-        response["id"] = result.entry.id;
-        response["handle"] = result.entry.handle;
-        response["message"] = result.entry.message;
+        JsonObject entry = response["entry"].to<JsonObject>();
+
+        entry["id"] = result.entry.id;
+        entry["handle"] = result.entry.handle;
+        entry["message"] = result.entry.message;
 
         sendJson(response);
     }
