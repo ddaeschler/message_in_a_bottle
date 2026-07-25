@@ -224,7 +224,7 @@
       display: grid;
       place-items: center;
       padding: 1rem;
-      background: rgba(0, 0, 0, 0.78);
+      background: rgba(0, 0, 0, 0.68);
       backdrop-filter: blur(3px);
     }
 
@@ -357,6 +357,16 @@
     </form>
   </div>
 
+  <div class="modal-backdrop" id="welcome-modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+    <form class="modal" id="welcome-form">
+      <h1 id="welcome-title">A mysterious message bottle washed ashore</h1>
+      <p>It’s here for anyone who happens to find it. Peek inside to see what others have left behind, add a message of your own, or stick around and chat with whoever drifts by.</p>
+      <div class="modal-actions">
+        <button class="modal-button" type="submit">continue</button>
+      </div>
+    </form>
+  </div>
+
   <script>
     // API contract:
     // GET  /read                    -> { "entries": Message[] }
@@ -380,6 +390,8 @@
     const handleForm = document.querySelector("#handle-form");
     const handleInput = document.querySelector("#handle-input");
     const handleCounter = document.querySelector("#handle-counter");
+    const welcomeModal = document.querySelector("#welcome-modal");
+    const welcomeForm = document.querySelector("#welcome-form");
     const utf8Encoder = new TextEncoder();
 
     let handle = sessionStorage.getItem("guestbookHandle") || "";
@@ -574,6 +586,11 @@
       messageInput.focus();
     }
 
+    function closeWelcomeModal() {
+      welcomeModal.hidden = true;
+      messageInput.focus();
+    }
+
     messageInput.addEventListener("input", updateMessageCounter);
     handleInput.addEventListener("input", updateHandleCounter);
 
@@ -611,6 +628,12 @@
       pendingMessage = "";
       if (message) void writeMessage(message);
     });
+
+    welcomeForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      closeWelcomeModal();
+    });
+
 
     updateHandleDisplay();
     updateMessageCounter();
